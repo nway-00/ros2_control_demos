@@ -28,12 +28,19 @@
 #include "rclcpp/macros.hpp"
 #include "ros2_control_demo_hardware/visibility_control.h"
 
+#include "originbot_comms.hpp"
+#include "wheel.hpp"
+
+
 namespace ros2_control_demo_hardware
 {
+
 class OriginBotSystemHardware : public hardware_interface::BaseInterface<hardware_interface::SystemInterface>
 {
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS(OriginBotSystemHardware);
+
+  OriginBotSystemHardware();
 
   ROS2_CONTROL_DEMO_HARDWARE_PUBLIC
   hardware_interface::return_type configure(const hardware_interface::HardwareInfo & info) override;
@@ -60,16 +67,23 @@ private:
   // Parameters for the OriginBot simulation
   double hw_start_sec_;
   double hw_stop_sec_;
+  std::string hw_serial_dev_;
 
   // Store the command for the simulated robot
-  std::vector<double> hw_commands_;
-  std::vector<double> hw_positions_;
-  std::vector<double> hw_velocities_;
+  //std::vector<double> hw_commands_;
+  //std::vector<double> hw_positions_;   // ???不知道是什么
+  //std::vector<double> hw_velocities_;  // 每个轮子的速度
+  Wheel hw_wheel_l_;  // 左轮
+  Wheel hw_wheel_r_;  // 右轮
 
   // Store the wheeled robot position
   double base_x_, base_y_, base_theta_;
 
+  rclcpp::Logger logger_;
+
   std::chrono::time_point<std::chrono::system_clock> time_;
+
+  OriginBotComms originbot_;
 };
 
 }  // namespace ros2_control_demo_hardware

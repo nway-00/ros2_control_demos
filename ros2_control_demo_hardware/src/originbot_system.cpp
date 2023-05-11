@@ -27,29 +27,44 @@
 
 namespace ros2_control_demo_hardware
 {
+OriginBotSystemHardware::OriginBotSystemHardware()
+  : logger_(rclcpp::get_logger("OriginBotSystemHardware"))
+{
+  
+}
+
 hardware_interface::return_type OriginBotSystemHardware::configure(const hardware_interface::HardwareInfo & info)
 {
+  if (configure_default(info) != hardware_interface::return_type::OK)
+  {
+    return hardware_interface::return_type::ERROR;
+  }
+
+  RCLCPP_INFO(logger_, "Configuring...");
   base_x_ = 0.0;
   base_y_ = 0.0;
   base_theta_ = 0.0;
 
   time_ = std::chrono::system_clock::now(); // 上次时间
 
-  if (configure_default(info) != hardware_interface::return_type::OK)
-  {
-    return hardware_interface::return_type::ERROR;
-  }
-
   // 参数 & 状态，命令
   hw_start_sec_ = stod(info_.hardware_parameters["example_param_hw_start_duration_sec"]);  // 延迟启动secs
   hw_stop_sec_ = stod(info_.hardware_parameters["example_param_hw_stop_duration_sec"]);    // 延迟停止secs
-  hw_positions_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());   // 位置数组
-  hw_velocities_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());  // 速度数组
-  hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());    // 命令数组
+  hw_serial_dev_ = info_.hardware_parameters["example_param_hw_device"];                   // 串口设备名称
+  //hw_positions_.resize( info_.joints.size(), std::numeric_limits<double>::quiet_NaN());  // 位置数组
+  //hw_velocities_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());  // 速度数组
+  //hw_commands_.resize(  info_.joints.size(), std::numeric_limits<double>::quiet_NaN());  // 命令数组
 
+  // 检查 joints 个数
+  if(info_.joints.size() != 2){
+      RCLCPP_FATAL(logger_, "More than 2 joints %d  found. 2 expected.", info_.joints.size());
+      return hardware_interface::return_type::ERROR;
+  }
+  // 检查每个 joint 中 command_interfaces 和 state_interface
   for (const hardware_interface::ComponentInfo & joint : info_.joints)
   {
-    // DiffBotSystem has exactly two states and one command interface on each joint: position velocity + velocity
+    // DiffBotSystem has exactly two states and one command interface on each joint: 
+    // {command_interfaces:{HW_IF_VELOCITY}, state_interfaces:{HW_IF_POSITION,HW_IF_VELOCITY}}
     if (joint.command_interfaces.size() != 1)
     {
       RCLCPP_FATAL(
@@ -97,6 +112,15 @@ hardware_interface::return_type OriginBotSystemHardware::configure(const hardwar
     }
   }
 
+  //set up the wheels
+  hw_wheel_l_.setup(info_.joints[0].name);
+  hw_wheel_r_.setup(info_.joints[1].name);
+
+  // 串口设置
+  originbot_.setup(hw_serial_dev_, 115200, 2000);
+
+  RCLCPP_INFO(logger_, "Finished Configuration");
+
   status_ = hardware_interface::status::CONFIGURED;
   return hardware_interface::return_type::OK;
 }
@@ -104,12 +128,11 @@ hardware_interface::return_type OriginBotSystemHardware::configure(const hardwar
 std::vector<hardware_interface::StateInterface> OriginBotSystemHardware::export_state_interfaces()
 {
   std::vector<hardware_interface::StateInterface> state_interfaces;
-  for (auto i = 0u; i < info_.joints.size(); i++)
-  {
-    // 两个 state_interface
-    state_interfaces.emplace_back(hardware_interface::StateInterface(info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_positions_[i]));
-    state_interfaces.emplace_back(hardware_interface::StateInterface(info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_velocities_[i]));
-  }
+
+  state_interfaces.emplace_back(hardware_interface::StateInterface(hw_wheel_l_.name, hardware_interface::HW_IF_POSITION, &hw_wheel_l_.pos));  // 左轮-pos
+  state_interfaces.emplace_back(hardware_interface::StateInterface(hw_wheel_l_.name, hardware_interface::HW_IF_VELOCITY, &hw_wheel_l_.vel));  // 左轮-速度
+  state_interfaces.emplace_back(hardware_interface::StateInterface(hw_wheel_r_.name, hardware_interface::HW_IF_POSITION, &hw_wheel_r_.pos));  // 右轮-pos
+  state_interfaces.emplace_back(hardware_interface::StateInterface(hw_wheel_r_.name, hardware_interface::HW_IF_VELOCITY, &hw_wheel_r_.vel));  // 右轮-速度
 
   return state_interfaces;
 }
@@ -117,11 +140,9 @@ std::vector<hardware_interface::StateInterface> OriginBotSystemHardware::export_
 std::vector<hardware_interface::CommandInterface> OriginBotSystemHardware::export_command_interfaces()
 {
   std::vector<hardware_interface::CommandInterface> command_interfaces;
-  for (auto i = 0u; i < info_.joints.size(); i++)
-  {
-    // 一个 command_interface
-    command_interfaces.emplace_back(hardware_interface::CommandInterface(info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_commands_[i]));
-  }
+
+  command_interfaces.emplace_back(hardware_interface::CommandInterface(hw_wheel_l_.name, hardware_interface::HW_IF_VELOCITY, &hw_wheel_l_.cmd));
+  command_interfaces.emplace_back(hardware_interface::CommandInterface(hw_wheel_r_.name, hardware_interface::HW_IF_VELOCITY, &hw_wheel_r_.cmd));
 
   return command_interfaces;
 }
@@ -134,20 +155,11 @@ hardware_interface::return_type OriginBotSystemHardware::start()
   for (auto i = 0; i <= hw_start_sec_; i++)
   {
     rclcpp::sleep_for(std::chrono::seconds(1));
-    RCLCPP_INFO(
-      rclcpp::get_logger("OriginBotSystemHardware"), "%.1f seconds left...", hw_start_sec_ - i);
+    RCLCPP_INFO(rclcpp::get_logger("OriginBotSystemHardware"), "%.1f seconds left...", hw_start_sec_ - i);
   }
 
-  // set some default values  零初始化
-  for (auto i = 0u; i < hw_positions_.size(); i++)
-  {
-    if (std::isnan(hw_positions_[i]))
-    {
-      hw_positions_[i] = 0;
-      hw_velocities_[i] = 0;
-      hw_commands_[i] = 0;
-    }
-  }
+  // 停车
+  originbot_.volocity_control(0.0f, 0.0f);
 
   status_ = hardware_interface::status::STARTED;
 
@@ -164,9 +176,11 @@ hardware_interface::return_type OriginBotSystemHardware::stop()
   for (auto i = 0; i <= hw_stop_sec_; i++)
   {
     rclcpp::sleep_for(std::chrono::seconds(1));
-    RCLCPP_INFO(
-      rclcpp::get_logger("OriginBotSystemHardware"), "%.1f seconds left...", hw_stop_sec_ - i);
+    RCLCPP_INFO(rclcpp::get_logger("OriginBotSystemHardware"), "%.1f seconds left...", hw_stop_sec_ - i);
   }
+
+   // 停车
+  originbot_.volocity_control(0.0f, 0.0f);
 
   status_ = hardware_interface::status::STOPPED;
 
@@ -179,35 +193,28 @@ hardware_interface::return_type OriginBotSystemHardware::read()
 {
   RCLCPP_INFO(rclcpp::get_logger("OriginBotSystemHardware"), "Reading...");
 
-  double radius = 0.02;  // radius of the wheels
-  double dist_w = 0.1;   // distance between the wheels
-  double dt = 0.01;      // Control period
-  for (uint i = 0; i < hw_commands_.size(); i++)
-  {
-    // Simulate DiffBot wheels's movement as a first-order system
-    // Update the joint status: this is a revolute joint without any limit.
-    // Simply integrates
-    hw_positions_[i] = hw_positions_[1] + dt * hw_commands_[i];
-    hw_velocities_[i] = hw_commands_[i];
+  //Caculate time delta
+  auto new_time = std::chrono::system_clock::now();
+  auto delt = new_time - time_;
+  double deltaSeconds = delt.count();
+  time_ = new_time;
 
-    RCLCPP_INFO(
-      rclcpp::get_logger("OriginBotSystemHardware"),
-      "Got position state %.5f and velocity state %.5f for '%s'!", hw_positions_[i],
-      hw_velocities_[i], info_.joints[i].name.c_str());
+  // 检查连接
+  if(! originbot_.connected()){
+    return hardware_interface::return_type::ERROR;
   }
 
-  // Update the free-flyer, i.e. the base notation using the classical
-  // wheel differentiable kinematics
-  double base_dx = 0.5 * radius * (hw_commands_[0] + hw_commands_[1]) * cos(base_theta_);
-  double base_dy = 0.5 * radius * (hw_commands_[0] + hw_commands_[1]) * sin(base_theta_);
-  double base_dtheta = radius * (hw_commands_[0] - hw_commands_[1]) / dist_w;
-  base_x_ += base_dx * dt;
-  base_y_ += base_dy * dt;
-  base_theta_ += base_dtheta * dt;
-
-  RCLCPP_INFO(
-    rclcpp::get_logger("OriginBotSystemHardware"), "Joints successfully read! (%.5f,%.5f,%.5f)",
-    base_x_, base_y_, base_theta_);
+  // 获取左轮速度，右轮速度
+  float left_vel = 0.0f, right_vel = 0.0f; // 左轮速度m/s 右轮速度m/s
+  originbot_.get_volocity(left_vel, right_vel);
+  
+  double pos_prv = hw_wheel_l_.pos;
+  hw_wheel_l_.vel = left_vel;
+  hw_wheel_l_.pos = (left_vel * deltaSeconds) + pos_prv;
+  
+  pos_prv = hw_wheel_r_.pos;
+  hw_wheel_r_.vel = right_vel;
+  hw_wheel_r_.pos = (right_vel * deltaSeconds) + pos_prv;
 
   return hardware_interface::return_type::OK;
 }
@@ -216,13 +223,15 @@ hardware_interface::return_type ros2_control_demo_hardware::OriginBotSystemHardw
 {
   RCLCPP_INFO(rclcpp::get_logger("OriginBotSystemHardware"), "Writing...");
 
-  for (auto i = 0u; i < hw_commands_.size(); i++)
-  {
-    // Simulate sending commands to the hardware
-    RCLCPP_INFO(
-      rclcpp::get_logger("OriginBotSystemHardware"), "Got command %.5f for '%s'!", hw_commands_[i],
-      info_.joints[i].name.c_str());
-  }
+  originbot_.volocity_control(hw_wheel_l_.cmd, hw_wheel_r_.cmd);
+
+  // for (auto i = 0u; i < hw_commands_.size(); i++)
+  // {
+  //   // Simulate sending commands to the hardware
+  //   RCLCPP_INFO(
+  //     rclcpp::get_logger("OriginBotSystemHardware"), "Got command %.5f for '%s'!", hw_commands_[i],
+  //     info_.joints[i].name.c_str());
+  // }
   RCLCPP_INFO(rclcpp::get_logger("OriginBotSystemHardware"), "Joints successfully written!");
 
   return hardware_interface::return_type::OK;
