@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot name="originbot_description">
+  <xacro:arg name="use_sim" default="false" />
+
+  <!-- Enable setting arguments from the launch file -->
+  <xacro:arg name="use_fake_hardware" default="false" />
+  <xacro:arg name="fake_sensor_commands" default="false" />
+  <xacro:arg name="prefix" default="" />
+
+  <!-- Import 机器人模型文件 -->
+  <xacro:include filename="$(find diffbot_description)/urdf/originbot.urdf.xacro" />
+  <!-- Import diffbot ros2_control description -->
+  <xacro:include filename="$(find diffbot_description)/ros2_control/originbot_system.ros2_control.xacro" />
+
+
+  <!-- 机器人模型 -->
+  <xacro:originbot prefix="$(arg prefix)" />
+
+  <!-- ros2_control -->
+  <xacro:diffbot_system
+    name="OriginBotSystem" prefix="$(arg prefix)"
+    use_fake_hardware="$(arg use_fake_hardware)"
+    fake_sensor_commands="$(arg fake_sensor_commands)"/>
+</robot>
